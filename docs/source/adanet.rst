@@ -20,6 +20,14 @@ High-level APIs for training, evaluating, predicting, and serving AdaNet model.
     :show-inheritance:
     :inherited-members:
 
+:hidden:`AutoEnsembleSubestimator`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: AutoEnsembleSubestimator
+    :members:
+    :show-inheritance:
+    :inherited-members:
+
 :hidden:`Estimator`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -35,29 +43,6 @@ High-level APIs for training, evaluating, predicting, and serving AdaNet model.
     :members:
     :show-inheritance:
     :inherited-members:
-
-Ensembles
----------------
-
-Collections representing learned combinations of subnetworks.
-
-:hidden:`MixtureWeightType`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: MixtureWeightType
-    :members:
-
-:hidden:`WeightedSubnetwork`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: WeightedSubnetwork
-    :members:
-
-:hidden:`Ensemble`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. autoclass:: Ensemble
-    :members:
 
 Evaluator
 ---------------

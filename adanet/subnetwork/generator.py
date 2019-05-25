@@ -67,7 +67,7 @@ class Subnetwork(
   """An AdaNet subnetwork.
 
   In the AdaNet paper, an :class:`adanet.subnetwork.Subnetwork` is are called a
-  'subnetwork', and indicated by 'h'. A collection of weighted subnetworks form
+  *subnetwork*, and indicated by *h*. A collection of weighted subnetworks form
   an AdaNet ensemble.
 
   Args:
@@ -77,7 +77,7 @@ class Subnetwork(
       type is :class:`MATRIX`, the AdaNet algorithm takes care of computing
       ensemble mixture weights matrices (one per subnetwork) that multiply the
       various last layers of the ensemble's subnetworks, and regularize them
-      using their subnetwork's complexity. This field is represented by 'h' in
+      using their subnetwork's complexity. This field is represented by *h* in
       the AdaNet paper.
     logits: :class:`tf.Tensor` logits or dict of string to :class:`tf.Tensor`
       logits (for multi-head) for training the subnetwork. These logits are not
@@ -163,7 +163,13 @@ class Builder(object):
 
   @abc.abstractproperty
   def name(self):
-    """Returns the unique name of this subnetwork within an iteration."""
+    r"""Returns the unique name of this subnetwork within an iteration.
+
+    Returns:
+      String name of this subnetwork.
+    """
+
+    # TODO: Validate name matches ^[A-Za-z0-9_.\\-/]*$
 
   @abc.abstractmethod
   def build_subnetwork(self,
@@ -177,16 +183,13 @@ class Builder(object):
     # pyformat: disable
     """Returns the candidate `Subnetwork` to add to the ensemble.
 
-    This method will be called only once, before
-    :meth:`build_subnetwork_train_op`
-    and :meth:`build_mixture_weights_train_op` are called. This method should
-    construct the candidate subnetwork's graph operations and variables.
+    This method will be called only once before
+    :meth:`build_subnetwork_train_op`. This method should construct the
+    candidate subnetwork's graph operations and variables.
 
     Accessing the global step via :meth:`tf.train.get_or_create_global_step()`
-    or
-    :meth:`tf.train.get_global_step()` within this scope will return an
-    incrementable
-    iteration step since the beginning of the iteration.
+    or :meth:`tf.train.get_global_step()` within this scope will return an
+    incrementable iteration step since the beginning of the iteration.
 
     Args:
       features: Input `dict` of :class:`tf.Tensor` objects.
@@ -245,68 +248,18 @@ class Builder(object):
       Either a train op or an :class:`adanet.subnetwork.TrainOpSpec`.
     """
 
-  @abc.abstractmethod
-  def build_mixture_weights_train_op(self, loss, var_list, logits, labels,
-                                     iteration_step, summary):
-    # pyformat: disable
-    """Returns an op for training the ensemble's mixture weights.
-
-    Allows AdaNet to learn the mixture weights of each subnetwork
-    according to Equation (6).
-
-    This method will be called once after `build_subnetwork`.
-
-    Accessing the global step via :meth:`tf.train.get_or_create_global_step()`
-    or :meth:`tf.train.get_global_step()` within this scope will return an
-    incrementable iteration step since the beginning of the iteration.
-
-    Args:
-      loss: A :class:`tf.Tensor` containing the ensemble's loss to minimize.
-      var_list: List of ensemble mixture weight `tf.Variables` to update as
-        become part of the training operation.
-      logits: The ensemble's logits :class:`tf.Tensor` from applying the mixture
-        weights and bias to the ensemble's subnetworks.
-      labels: Labels :class:`tf.Tensor` or a dictionary of string label name to
-        :class:`tf.Tensor` (for multi-head).
-      iteration_step: Integer :class:`tf.Tensor` representing the step since the
-        beginning of the current iteration, as opposed to the global step.
-      summary: An :class:`adanet.Summary` for scoping summaries to individual
-        subnetworks in Tensorboard. Using :class:`tf.summary` within this scope
-        will use this :class:`adanet.Summary` under the hood.
-
-    Returns:
-      Either a train op or an :class:`adanet.subnetwork.TrainOpSpec`.
-    """
-    # pyformat: enable
-
   def build_subnetwork_report(self):
     """Returns a `subnetwork.Report` to materialize and record.
 
     This method will be called once after :meth:`build_subnetwork`.
-    Do NOT depend on variables created in :meth:`build_subnetwork_train_op` or
-    :meth:`build_mixture_weights_train_op`, because they are not called before
-    :meth:`build_subnetwork_report` is called.
+    Do NOT depend on variables created in :meth:`build_subnetwork_train_op`,
+    because they are not called before :meth:`build_subnetwork_report` is
+    called.
 
     If it returns None, AdaNet records the name and standard eval metrics.
     """
 
     return None
-
-  def prune_previous_ensemble(self, previous_ensemble):
-    """Specifies which subnetworks from the previous ensemble to keep.
-
-    The selected subnetworks from the previous ensemble will be kept in the
-    candidate ensemble that includes this subnetwork.
-
-    By default, none of the previous ensemble subnetworks are pruned.
-
-    Args:
-      previous_ensemble: :class:`adanet.Ensemble` object.
-
-    Returns:
-      List of integer indices of `weighted_subnetworks` to keep.
-    """
-    return range(len(previous_ensemble.weighted_subnetworks))
 
 
 class Generator(object):
@@ -321,7 +274,7 @@ class Generator(object):
 
   @abc.abstractmethod
   def generate_candidates(self, previous_ensemble, iteration_number,
-                          previous_ensemble_reports, all_reports):
+                          previous_ensemble_reports, all_reports, config):
     # pyformat: disable
     """Generates :class:`adanet.subnetwork.Builder` instances for an iteration.
 
@@ -351,6 +304,8 @@ class Generator(object):
         List containing all the :class:`adanet.subnetwork.MaterializedReport`
         instances in an AdaNet iteration, starting from iteration 0, and
         ending at iteration t-1.
+      config: The current :class:`tf.estimator.RunConfig` object to configure
+        the runtime settings.
 
     Returns:
       A list of :class:`adanet.subnetwork.Builder` instances.

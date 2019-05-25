@@ -19,23 +19,32 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import json
 import os
+import time
 
+from absl import logging
 from absl.testing import parameterized
+from adanet import tf_compat
 from adanet.core import testing_utils as tu
-from adanet.core.ensemble import MixtureWeightType
 from adanet.core.estimator import Estimator
 from adanet.core.evaluator import Evaluator
 from adanet.core.report_materializer import ReportMaterializer
-from adanet.core.subnetwork import Builder
-from adanet.core.subnetwork import Generator
-from adanet.core.subnetwork import MaterializedReport
-from adanet.core.subnetwork import Report
-from adanet.core.subnetwork import SimpleGenerator
-from adanet.core.subnetwork import Subnetwork
-from adanet.core.subnetwork import TrainOpSpec
-from distutils.version import LooseVersion
+from adanet.ensemble import AllStrategy
+from adanet.ensemble import GrowStrategy
+from adanet.ensemble import MixtureWeightType
+from adanet.ensemble import SoloStrategy
+from adanet.subnetwork import Builder
+from adanet.subnetwork import Generator
+from adanet.subnetwork import MaterializedReport
+from adanet.subnetwork import Report
+from adanet.subnetwork import SimpleGenerator
+from adanet.subnetwork import Subnetwork
+from adanet.subnetwork import TrainOpSpec
 import tensorflow as tf
+from tensorflow_estimator.python.estimator.head import binary_class_head
+from tensorflow_estimator.python.estimator.head import multi_head as multi_head_lib
+from tensorflow_estimator.python.estimator.head import regression_head
 
 # Module path changed. Try importing from new and old location to maintain
 # backwards compatibility.
@@ -46,7 +55,10 @@ except ImportError:
   from tensorflow.python.estimator.export import export
 # pylint: enable=g-import-not-at-top
 
-tf.logging.set_verbosity(tf.logging.INFO)
+logging.set_verbosity(logging.INFO)
+
+XOR_FEATURES = [[1., 0.], [0., 0], [0., 1.], [1., 1.]]
+XOR_LABELS = [[1.], [0.], [1.], [0.]]
 
 
 class _DNNBuilder(Builder):
@@ -89,15 +101,15 @@ class _DNNBuilder(Builder):
     if previous_ensemble:
       # Increment seed so different iterations don't learn the exact same thing.
       seed += 1
-    with tf.variable_scope("dnn"):
+    with tf_compat.v1.variable_scope("dnn"):
       persisted_tensors = {}
-      with tf.variable_scope("hidden_layer"):
-        w = tf.get_variable(
+      with tf_compat.v1.variable_scope("hidden_layer"):
+        w = tf_compat.v1.get_variable(
             shape=[2, self._layer_size],
-            initializer=tf.glorot_uniform_initializer(seed=seed),
+            initializer=tf_compat.v1.glorot_uniform_initializer(seed=seed),
             name="weight")
         disjoint_op = tf.constant([1], name="disjoint_op")
-        with tf.colocate_with(disjoint_op):  # tests b/118865235
+        with tf_compat.v1.colocate_with(disjoint_op):  # tests b/118865235
           hidden_layer = tf.matmul(features["x"], w)
 
       if previous_ensemble:
@@ -117,13 +129,17 @@ class _DNNBuilder(Builder):
 
     last_layer = hidden_layer
 
-    with tf.variable_scope("logits"):
-      logits = tf.layers.dense(
+    with tf_compat.v1.variable_scope("logits"):
+      logits = tf_compat.v1.layers.dense(
           hidden_layer,
           logits_dimension,
-          kernel_initializer=tf.glorot_uniform_initializer(seed=seed))
+          kernel_initializer=tf_compat.v1.glorot_uniform_initializer(seed=seed))
 
     summary.scalar("scalar", 3)
+    batch_size = features["x"].get_shape().as_list()[0]
+    summary.image("image", tf.ones([batch_size, 3, 3, 1]))
+    with tf_compat.v1.variable_scope("nested"):
+      summary.scalar("scalar", 5)
 
     return Subnetwork(
         last_layer=last_layer if self._return_penultimate_layer else logits,
@@ -134,7 +150,7 @@ class _DNNBuilder(Builder):
 
   def build_subnetwork_train_op(self, subnetwork, loss, var_list, labels,
                                 iteration_step, summary, previous_ensemble):
-    optimizer = tf.train.GradientDescentOptimizer(
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(
         learning_rate=self._learning_rate)
     train_op = optimizer.minimize(loss, var_list=var_list)
     if not self._subnetwork_hooks:
@@ -144,7 +160,7 @@ class _DNNBuilder(Builder):
 
   def build_mixture_weights_train_op(self, loss, var_list, logits, labels,
                                      iteration_step, summary):
-    optimizer = tf.train.GradientDescentOptimizer(
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(
         learning_rate=self._mixture_weight_learning_rate)
     train_op = optimizer.minimize(loss, var_list=var_list)
     if not self._mixture_weight_hooks:
@@ -157,8 +173,8 @@ class _DNNBuilder(Builder):
         hparams={"layer_size": self._layer_size},
         attributes={"complexity": tf.constant(3, dtype=tf.int32)},
         metrics={
-            "moo": (tf.constant(3, dtype=tf.int32),
-                    tf.constant(3, dtype=tf.int32))
+            "moo": (tf.constant(3,
+                                dtype=tf.int32), tf.constant(3, dtype=tf.int32))
         })
 
 
@@ -186,16 +202,16 @@ class _SimpleBuilder(Builder):
       # Increment seed so different iterations don't learn the exact same thing.
       seed += 1
 
-    with tf.variable_scope("simple"):
-      input_layer = tf.feature_column.input_layer(
+    with tf_compat.v1.variable_scope("simple"):
+      input_layer = tf_compat.v1.feature_column.input_layer(
           features=features, feature_columns=self._feature_columns)
       last_layer = input_layer
 
-    with tf.variable_scope("logits"):
-      logits = tf.layers.dense(
+    with tf_compat.v1.variable_scope("logits"):
+      logits = tf_compat.v1.layers.dense(
           last_layer,
           logits_dimension,
-          kernel_initializer=tf.glorot_uniform_initializer(seed=seed))
+          kernel_initializer=tf_compat.v1.glorot_uniform_initializer(seed=seed))
 
     return Subnetwork(
         last_layer=last_layer,
@@ -206,12 +222,12 @@ class _SimpleBuilder(Builder):
 
   def build_subnetwork_train_op(self, subnetwork, loss, var_list, labels,
                                 iteration_step, summary, previous_ensemble):
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=.001)
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(learning_rate=.001)
     return optimizer.minimize(loss, var_list=var_list)
 
   def build_mixture_weights_train_op(self, loss, var_list, logits, labels,
                                      iteration_step, summary):
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=.001)
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(learning_rate=.001)
     return optimizer.minimize(loss, var_list=var_list)
 
 
@@ -235,10 +251,11 @@ class _LinearBuilder(Builder):
                        summary,
                        previous_ensemble=None):
 
-    logits = tf.layers.dense(
+    logits = tf_compat.v1.layers.dense(
         features["x"],
         logits_dimension,
-        kernel_initializer=tf.glorot_uniform_initializer(seed=self._seed))
+        kernel_initializer=tf_compat.v1.glorot_uniform_initializer(
+            seed=self._seed))
 
     return Subnetwork(
         last_layer=features["x"],
@@ -249,12 +266,12 @@ class _LinearBuilder(Builder):
 
   def build_subnetwork_train_op(self, subnetwork, loss, var_list, labels,
                                 iteration_step, summary, previous_ensemble):
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=.001)
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(learning_rate=.001)
     return optimizer.minimize(loss, var_list=var_list)
 
   def build_mixture_weights_train_op(self, loss, var_list, logits, labels,
                                      iteration_step, summary):
-    optimizer = tf.train.GradientDescentOptimizer(
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(
         learning_rate=self._mixture_weight_learning_rate)
     return optimizer.minimize(loss, var_list=var_list)
 
@@ -299,9 +316,9 @@ class _WidthLimitingDNNBuilder(_DNNBuilder):
     if width_limit is not None and width_limit == 0:
       raise ValueError("width_limit must be at least 1 or None.")
 
-    super(_WidthLimitingDNNBuilder, self).__init__(
-        name, learning_rate, mixture_weight_learning_rate,
-        return_penultimate_layer, layer_size, seed)
+    super(_WidthLimitingDNNBuilder,
+          self).__init__(name, learning_rate, mixture_weight_learning_rate,
+                         return_penultimate_layer, layer_size, seed)
     self._width_limit = width_limit
 
   def prune_previous_ensemble(self, previous_ensemble):
@@ -313,260 +330,323 @@ class _WidthLimitingDNNBuilder(_DNNBuilder):
     return indices[-self._width_limit + 1:]  # pylint: disable=invalid-unary-operand-type
 
 
-class _ModifierSessionRunHook(tf.train.SessionRunHook):
-  """Modifies the graph by adding a variable."""
-
-  def __init__(self, var_name="hook_created_variable"):
-    self._var_name = var_name
-    self._begun = False
-
-  def begin(self):
-    """Adds a variable to the graph.
-
-    Raises:
-      ValueError: If we've already begun a run.
-    """
-
-    if self._begun:
-      raise ValueError("begin called twice without end.")
-    self._begun = True
-    _ = tf.get_variable(name=self._var_name, initializer="")
-
-  def end(self, session):
-    """Adds a variable to the graph.
-
-    Args:
-      session: A `tf.Session` object that can be used to run ops.
-
-    Raises:
-      ValueError: If we've not begun a run.
-    """
-
-    _ = session
-    if not self._begun:
-      raise ValueError("end called without begin.")
-    self._begun = False
-
-
 class EstimatorTest(tu.AdanetTestCase):
 
-  @parameterized.named_parameters({
-      "testcase_name": "one_step",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 1,
-      "steps": 1,
-      "max_steps": None,
-      "want_loss": 0.49899703,
-  }, {
-      "testcase_name": "single_builder_max_steps",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 200,
-      "max_steps": 300,
-      "want_loss": 0.32420248,
-  }, {
-      "testcase_name": "single_builder_steps",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 200,
-      "steps": 300,
-      "max_steps": None,
-      "want_loss": 0.32420248,
-  }, {
-      "testcase_name": "single_builder_no_bias",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 200,
-      "use_bias": False,
-      "want_loss": 0.496736,
-  }, {
-      "testcase_name":
-          "single_builder_subnetwork_hooks",
-      "subnetwork_generator":
-          SimpleGenerator([
-              _DNNBuilder(
-                  "dnn",
-                  subnetwork_chief_hooks=[
-                      _ModifierSessionRunHook("chief_hook_var")
-                  ],
-                  subnetwork_hooks=[_ModifierSessionRunHook("hook_var")])
-          ]),
-      "max_iteration_steps":
-          200,
-      "use_bias":
-          False,
-      "want_loss":
-          0.496736,
-  }, {
-      "testcase_name":
-          "single_builder_mixture_weight_hooks",
-      "subnetwork_generator":
-          SimpleGenerator([
-              _DNNBuilder(
-                  "dnn",
-                  mixture_weight_chief_hooks=[
-                      _ModifierSessionRunHook("chief_hook_var")
-                  ],
-                  mixture_weight_hooks=[_ModifierSessionRunHook("hook_var")])
-          ]),
-      "max_iteration_steps":
-          200,
-      "use_bias":
-          False,
-      "want_loss":
-          0.496736,
-  }, {
-      "testcase_name":
-          "single_builder_scalar_mixture_weight",
-      "subnetwork_generator":
-          SimpleGenerator([_DNNBuilder("dnn", return_penultimate_layer=False)]),
-      "max_iteration_steps":
-          200,
-      "mixture_weight_type":
-          MixtureWeightType.SCALAR,
-      "want_loss":
-          0.32317898,
-  }, {
-      "testcase_name":
-          "single_builder_vector_mixture_weight",
-      "subnetwork_generator":
-          SimpleGenerator([_DNNBuilder("dnn", return_penultimate_layer=False)]),
-      "max_iteration_steps":
-          200,
-      "mixture_weight_type":
-          MixtureWeightType.VECTOR,
-      "want_loss":
-          0.32317898,
-  }, {
-      "testcase_name": "single_builder_replicate_ensemble_in_training",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "replicate_ensemble_in_training": True,
-      "max_iteration_steps": 200,
-      "max_steps": 300,
-      "want_loss": 0.32420215,
-  }, {
-      "testcase_name": "single_builder_with_hook",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 200,
-      "hooks": [_ModifierSessionRunHook()],
-      "want_loss": 0.32420248,
-  }, {
-      "testcase_name": "high_max_iteration_steps",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 500,
-      "want_loss": 0.32487726,
-  }, {
-      "testcase_name":
-          "two_builders",
-      "subnetwork_generator":
-          SimpleGenerator([_DNNBuilder("dnn"),
-                           _DNNBuilder("dnn2", seed=99)]),
-      "max_iteration_steps":
-          200,
-      "want_loss":
-          0.27713922,
-  }, {
-      "testcase_name":
-          "two_builders_different_layer_sizes",
-      "subnetwork_generator":
-          SimpleGenerator(
-              [_DNNBuilder("dnn"),
-               _DNNBuilder("dnn2", layer_size=3)]),
-      "max_iteration_steps":
-          200,
-      "want_loss":
-          0.29696745,
-  }, {
-      "testcase_name":
-          "two_builders_different_layer_sizes_three_iterations",
-      "subnetwork_generator":
-          SimpleGenerator(
-              [_DNNBuilder("dnn"),
-               _DNNBuilder("dnn2", layer_size=3)]),
-      "max_iteration_steps":
-          100,
-      "want_loss":
-          0.26433355,
-  }, {
-      "testcase_name":
-          "width_limiting_builder_no_pruning",
-      "subnetwork_generator":
-          SimpleGenerator([_WidthLimitingDNNBuilder("no_pruning")]),
-      "max_iteration_steps":
-          75,
-      "want_loss":
-          0.32001898,
-  }, {
-      "testcase_name":
-          "width_limiting_builder_some_pruning",
-      "subnetwork_generator":
-          SimpleGenerator(
-              [_WidthLimitingDNNBuilder("some_pruning", width_limit=2)]),
-      "max_iteration_steps":
-          75,
-      "want_loss":
-          0.38592532,
-  }, {
-      "testcase_name":
-          "width_limiting_builder_prune_all",
-      "subnetwork_generator":
-          SimpleGenerator(
-              [_WidthLimitingDNNBuilder("prune_all", width_limit=1)]),
-      "max_iteration_steps":
-          75,
-      "want_loss":
-          0.43492866,
-  }, {
-      "testcase_name":
-          "width_limiting_builder_mixed",
-      "subnetwork_generator":
-          SimpleGenerator([
-              _WidthLimitingDNNBuilder("no_pruning"),
-              _WidthLimitingDNNBuilder("some_pruning", width_limit=2),
-              _WidthLimitingDNNBuilder("prune_all", width_limit=1)
-          ]),
-      "max_iteration_steps":
-          75,
-      "want_loss":
-          0.32001898,
-  }, {
-      "testcase_name":
-          "evaluator_good_input",
-      "subnetwork_generator":
-          SimpleGenerator(
-              [_DNNBuilder("dnn"),
-               _DNNBuilder("dnn2", layer_size=3)]),
-      "evaluator":
-          Evaluator(input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=3),
-      "max_iteration_steps":
-          200,
-      "want_loss":
-          0.31241742,
-  }, {
-      "testcase_name":
-          "evaluator_bad_input",
-      "subnetwork_generator":
-          SimpleGenerator(
-              [_DNNBuilder("dnn"),
-               _DNNBuilder("dnn2", layer_size=3)]),
-      "evaluator":
-          Evaluator(input_fn=tu.dummy_input_fn([[1., 1.]], [[1.]]), steps=3),
-      "max_iteration_steps":
-          200,
-      "want_loss":
-          0.29696745,
-  }, {
-      "testcase_name":
-          "report_materializer",
-      "subnetwork_generator":
-          SimpleGenerator(
-              [_DNNBuilder("dnn"),
-               _DNNBuilder("dnn2", layer_size=3)]),
-      "report_materializer":
-          ReportMaterializer(
-              input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=1),
-      "max_iteration_steps":
-          200,
-      "want_loss":
-          0.29696745,
-  })
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "one_step",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 1,
+          "steps": 1,
+          "max_steps": None,
+          "want_loss": 0.49899703,
+      },
+      {
+          "testcase_name": "single_builder_max_steps",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 200,
+          "max_steps": 300,
+          "want_loss": 0.32420248,
+      },
+      {
+          "testcase_name": "single_builder_steps",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 200,
+          "steps": 300,
+          "max_steps": None,
+          "want_loss": 0.32420248,
+      },
+      {
+          "testcase_name": "single_builder_no_bias",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 200,
+          "use_bias": False,
+          "want_loss": 0.496736,
+      },
+      {
+          "testcase_name":
+              "single_builder_subnetwork_hooks",
+          "subnetwork_generator":
+              SimpleGenerator([
+                  _DNNBuilder(
+                      "dnn",
+                      subnetwork_chief_hooks=[
+                          tu.ModifierSessionRunHook("chief_hook_var")
+                      ],
+                      subnetwork_hooks=[tu.ModifierSessionRunHook("hook_var")])
+              ]),
+          "max_iteration_steps":
+              200,
+          "use_bias":
+              False,
+          "want_loss":
+              0.496736,
+      },
+      {
+          "testcase_name":
+              "single_builder_mixture_weight_hooks",
+          "subnetwork_generator":
+              SimpleGenerator([
+                  _DNNBuilder(
+                      "dnn",
+                      mixture_weight_chief_hooks=[
+                          tu.ModifierSessionRunHook("chief_hook_var")
+                      ],
+                      mixture_weight_hooks=[
+                          tu.ModifierSessionRunHook("hook_var")
+                      ])
+              ]),
+          "max_iteration_steps":
+              200,
+          "use_bias":
+              False,
+          "want_loss":
+              0.496736,
+      },
+      {
+          "testcase_name":
+              "single_builder_scalar_mixture_weight",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn", return_penultimate_layer=False)]),
+          "max_iteration_steps":
+              200,
+          "mixture_weight_type":
+              MixtureWeightType.SCALAR,
+          "want_loss":
+              0.32317898,
+      },
+      {
+          "testcase_name":
+              "single_builder_vector_mixture_weight",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn", return_penultimate_layer=False)]),
+          "max_iteration_steps":
+              200,
+          "mixture_weight_type":
+              MixtureWeightType.VECTOR,
+          "want_loss":
+              0.32317898,
+      },
+      {
+          "testcase_name": "single_builder_replicate_ensemble_in_training",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "replicate_ensemble_in_training": True,
+          "max_iteration_steps": 200,
+          "max_steps": 300,
+          "want_loss": 0.32420215,
+      },
+      {
+          "testcase_name": "single_builder_with_hook",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 200,
+          "hooks": [tu.ModifierSessionRunHook()],
+          "want_loss": 0.32420248,
+      },
+      {
+          "testcase_name": "high_max_iteration_steps",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 500,
+          "want_loss": 0.32487726,
+      },
+      {
+          "testcase_name":
+              "two_builders",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", seed=99)]),
+          "max_iteration_steps":
+              200,
+          "want_loss":
+              0.27713922,
+      },
+      {
+          "testcase_name":
+              "two_builders_different_layer_sizes",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "max_iteration_steps":
+              200,
+          "want_loss":
+              0.29696745,
+      },
+      {
+          "testcase_name":
+              "two_builders_different_layer_sizes_three_iterations",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "max_iteration_steps":
+              100,
+          "want_loss":
+              0.26433355,
+      },
+      {
+          "testcase_name":
+              "width_limiting_builder_no_pruning",
+          "subnetwork_generator":
+              SimpleGenerator([_WidthLimitingDNNBuilder("no_pruning")]),
+          "max_iteration_steps":
+              75,
+          "want_loss":
+              0.32001898,
+      },
+      {
+          "testcase_name":
+              "width_limiting_builder_some_pruning",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_WidthLimitingDNNBuilder("some_pruning", width_limit=2)]),
+          "max_iteration_steps":
+              75,
+          "want_loss":
+              0.38592532,
+      },
+      {
+          "testcase_name":
+              "width_limiting_builder_prune_all",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_WidthLimitingDNNBuilder("prune_all", width_limit=1)]),
+          "max_iteration_steps":
+              75,
+          "want_loss":
+              0.43492866,
+      },
+      {
+          "testcase_name":
+              "width_limiting_builder_mixed",
+          "subnetwork_generator":
+              SimpleGenerator([
+                  _WidthLimitingDNNBuilder("no_pruning"),
+                  _WidthLimitingDNNBuilder("some_pruning", width_limit=2),
+                  _WidthLimitingDNNBuilder("prune_all", width_limit=1)
+              ]),
+          "max_iteration_steps":
+              75,
+          "want_loss":
+              0.32001898,
+      },
+      {
+          "testcase_name":
+              "evaluator_good_input",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "evaluator":
+              Evaluator(
+                  input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=3),
+          "max_iteration_steps":
+              200,
+          "want_loss":
+              0.31241742,
+      },
+      {
+          "testcase_name":
+              "evaluator_bad_input",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "evaluator":
+              Evaluator(
+                  input_fn=tu.dummy_input_fn([[1., 1.]], [[1.]]), steps=3),
+          "max_iteration_steps":
+              200,
+          "want_loss":
+              0.29696745,
+      },
+      {
+          "testcase_name":
+              "report_materializer",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "report_materializer":
+              ReportMaterializer(
+                  input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=1),
+          "max_iteration_steps":
+              200,
+          "want_loss":
+              0.29696745,
+      },
+      {
+          "testcase_name":
+              "all_strategy",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "ensemble_strategies": [AllStrategy()],
+          "max_iteration_steps":
+              200,
+          "want_loss":
+              0.29196805,
+      },
+      {
+          "testcase_name":
+              "solo_strategy",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "ensemble_strategies": [SoloStrategy()],
+          "max_iteration_steps":
+              200,
+          "want_loss":
+              0.35249719,
+      },
+      {
+          "testcase_name":
+              "solo_strategy_three_iterations",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "ensemble_strategies": [SoloStrategy()],
+          "max_iteration_steps":
+              100,
+          "want_loss":
+              0.36163166
+      },
+      {
+          "testcase_name":
+              "multi_ensemble_strategy",
+          "subnetwork_generator":
+              SimpleGenerator(
+                  [_DNNBuilder("dnn"),
+                   _DNNBuilder("dnn2", layer_size=3)]),
+          "ensemble_strategies":
+              [AllStrategy(), GrowStrategy(),
+               SoloStrategy()],
+          "max_iteration_steps":
+              100,
+          "want_loss":
+              0.24838975,
+      },
+      {
+          "testcase_name":
+              "dataset_train_input_fn",
+          "subnetwork_generator":
+              SimpleGenerator([_DNNBuilder("dnn")]),
+          # pylint: disable=g-long-lambda
+          "train_input_fn":
+              lambda: tf.data.Dataset.from_tensors(({
+                  "x": XOR_FEATURES
+              }, XOR_LABELS)).repeat(),
+          # pylint: enable=g-long-lambda
+          "max_iteration_steps":
+              100,
+          "want_loss":
+              .32219219,
+      })
   def test_lifecycle(self,
                      subnetwork_generator,
                      want_loss,
@@ -576,9 +656,11 @@ class EstimatorTest(tu.AdanetTestCase):
                      use_bias=True,
                      replicate_ensemble_in_training=False,
                      hooks=None,
+                     ensemble_strategies=None,
                      max_steps=300,
                      steps=None,
-                     report_materializer=None):
+                     report_materializer=None,
+                     train_input_fn=None):
     """Train entire estimator lifecycle using XOR dataset."""
 
     run_config = tf.estimator.RunConfig(tf_random_seed=42)
@@ -587,18 +669,18 @@ class EstimatorTest(tu.AdanetTestCase):
         subnetwork_generator=subnetwork_generator,
         max_iteration_steps=max_iteration_steps,
         mixture_weight_type=mixture_weight_type,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         evaluator=evaluator,
+        ensemble_strategies=ensemble_strategies,
         report_materializer=report_materializer,
         use_bias=use_bias,
         replicate_ensemble_in_training=replicate_ensemble_in_training,
         model_dir=self.test_subdirectory,
         config=run_config)
 
-    xor_features = [[1., 0.], [0., 0], [0., 1.], [1., 1.]]
-    xor_labels = [[1.], [0.], [1.], [0.]]
-    train_input_fn = tu.dummy_input_fn(xor_features, xor_labels)
+    if not train_input_fn:
+      train_input_fn = tu.dummy_input_fn(XOR_FEATURES, XOR_LABELS)
 
     # Train.
     estimator.train(
@@ -607,7 +689,7 @@ class EstimatorTest(tu.AdanetTestCase):
     # Evaluate.
     eval_results = estimator.evaluate(
         input_fn=train_input_fn, steps=10, hooks=hooks)
-    tf.logging.info("%s", eval_results)
+    logging.info("%s", eval_results)
     self.assertAlmostEqual(want_loss, eval_results["loss"], places=3)
     self.assertEqual(max_steps or steps, eval_results["global_step"])
 
@@ -620,7 +702,7 @@ class EstimatorTest(tu.AdanetTestCase):
     # Export SavedModel.
     def serving_input_fn():
       """Input fn for serving export, starting from serialized example."""
-      serialized_example = tf.placeholder(
+      serialized_example = tf_compat.v1.placeholder(
           dtype=tf.string, shape=(None), name="serialized_example")
       return tf.estimator.export.ServingInputReceiver(
           features={"x": tf.constant([[0., 0.]], name="serving_x")},
@@ -633,41 +715,43 @@ class EstimatorTest(tu.AdanetTestCase):
         export_dir_base=self.test_subdirectory,
         serving_input_receiver_fn=serving_input_fn)
 
-  @parameterized.named_parameters({
-      "testcase_name":
-          "hash_bucket_with_one_hot",
-      "feature_column": (tf.feature_column.indicator_column(
-          categorical_column=(
-              tf.feature_column.categorical_column_with_hash_bucket(
-                  key="human_names", hash_bucket_size=4, dtype=tf.string)))),
-  }, {
-      "testcase_name":
-          "vocab_list_with_one_hot",
-      "feature_column": (tf.feature_column.indicator_column(
-          categorical_column=(
-              tf.feature_column.categorical_column_with_vocabulary_list(
-                  key="human_names",
-                  vocabulary_list=["alice", "bob"],
-                  dtype=tf.string)))),
-  }, {
-      "testcase_name":
-          "hash_bucket_with_embedding",
-      "feature_column": (tf.feature_column.embedding_column(
-          categorical_column=(
-              tf.feature_column.categorical_column_with_hash_bucket(
-                  key="human_names", hash_bucket_size=4, dtype=tf.string)),
-          dimension=2)),
-  }, {
-      "testcase_name":
-          "vocab_list_with_embedding",
-      "feature_column": (tf.feature_column.embedding_column(
-          categorical_column=(
-              tf.feature_column.categorical_column_with_vocabulary_list(
-                  key="human_names",
-                  vocabulary_list=["alice", "bob"],
-                  dtype=tf.string)),
-          dimension=2)),
-  })
+  @parameterized.named_parameters(
+      {
+          "testcase_name":
+              "hash_bucket_with_one_hot",
+          "feature_column": (tf.feature_column.indicator_column(
+              categorical_column=(
+                  tf.feature_column.categorical_column_with_hash_bucket(
+                      key="human_names", hash_bucket_size=4, dtype=tf.string)))
+                            ),
+      }, {
+          "testcase_name":
+              "vocab_list_with_one_hot",
+          "feature_column": (tf.feature_column.indicator_column(
+              categorical_column=(
+                  tf.feature_column.categorical_column_with_vocabulary_list(
+                      key="human_names",
+                      vocabulary_list=["alice", "bob"],
+                      dtype=tf.string)))),
+      }, {
+          "testcase_name":
+              "hash_bucket_with_embedding",
+          "feature_column": (tf.feature_column.embedding_column(
+              categorical_column=(
+                  tf.feature_column.categorical_column_with_hash_bucket(
+                      key="human_names", hash_bucket_size=4, dtype=tf.string)),
+              dimension=2)),
+      }, {
+          "testcase_name":
+              "vocab_list_with_embedding",
+          "feature_column": (tf.feature_column.embedding_column(
+              categorical_column=(
+                  tf.feature_column.categorical_column_with_vocabulary_list(
+                      key="human_names",
+                      vocabulary_list=["alice", "bob"],
+                      dtype=tf.string)),
+              dimension=2)),
+      })
   def test_categorical_columns(self, feature_column):
 
     def train_input_fn():
@@ -679,12 +763,12 @@ class EstimatorTest(tu.AdanetTestCase):
 
     report_materializer = ReportMaterializer(input_fn=train_input_fn, steps=1)
     estimator = Estimator(
-        head=tf.contrib.estimator.regression_head(),
+        head=regression_head.RegressionHead(),
         subnetwork_generator=SimpleGenerator(
             [_SimpleBuilder(name="simple", feature_columns=[feature_column])]),
         report_materializer=report_materializer,
         mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         max_iteration_steps=1,
         use_bias=True,
@@ -692,31 +776,32 @@ class EstimatorTest(tu.AdanetTestCase):
 
     estimator.train(input_fn=train_input_fn, max_steps=3)
 
-  @parameterized.named_parameters({
-      "testcase_name": "no_subnetwork_generator",
-      "subnetwork_generator": None,
-      "max_iteration_steps": 100,
-  }, {
-      "testcase_name": "negative_max_iteration_steps",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": -1,
-  }, {
-      "testcase_name": "zero_max_iteration_steps",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 0,
-  }, {
-      "testcase_name": "steps_and_max_steps",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 1,
-      "steps": 1,
-      "max_steps": 1,
-  }, {
-      "testcase_name": "zero_steps",
-      "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
-      "max_iteration_steps": 1,
-      "steps": 0,
-      "max_steps": None,
-  })
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "no_subnetwork_generator",
+          "subnetwork_generator": None,
+          "max_iteration_steps": 100,
+      }, {
+          "testcase_name": "negative_max_iteration_steps",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": -1,
+      }, {
+          "testcase_name": "zero_max_iteration_steps",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 0,
+      }, {
+          "testcase_name": "steps_and_max_steps",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 1,
+          "steps": 1,
+          "max_steps": 1,
+      }, {
+          "testcase_name": "zero_steps",
+          "subnetwork_generator": SimpleGenerator([_DNNBuilder("dnn")]),
+          "max_iteration_steps": 1,
+          "steps": 0,
+          "max_steps": None,
+      })
   def test_train_error(self,
                        subnetwork_generator,
                        max_iteration_steps,
@@ -730,7 +815,7 @@ class EstimatorTest(tu.AdanetTestCase):
           subnetwork_generator=subnetwork_generator,
           report_materializer=report_materializer,
           mixture_weight_type=MixtureWeightType.MATRIX,
-          mixture_weight_initializer=tf.zeros_initializer(),
+          mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
           warm_start_mixture_weights=True,
           max_iteration_steps=max_iteration_steps,
           use_bias=True,
@@ -769,7 +854,7 @@ class KerasCNNBuilder(Builder):
       seed += len(previous_ensemble.weighted_subnetworks)
     images = list(features.values())[0]
     images = tf.reshape(images, [-1, 2, 2, 1])
-    kernel_initializer = tf.keras.initializers.he_normal(seed=seed)
+    kernel_initializer = tf_compat.v1.keras.initializers.he_normal(seed=seed)
     x = tf.keras.layers.Conv2D(
         filters=3,
         kernel_size=1,
@@ -782,7 +867,7 @@ class KerasCNNBuilder(Builder):
     x = tf.keras.layers.Dense(
         units=3, activation="relu", kernel_initializer=kernel_initializer)(
             x)
-    logits = tf.layers.Dense(
+    logits = tf_compat.v1.layers.Dense(
         units=1, activation=None, kernel_initializer=kernel_initializer)(
             x)
     complexity = tf.constant(1)
@@ -800,7 +885,7 @@ class KerasCNNBuilder(Builder):
                                 iteration_step,
                                 summary,
                                 previous_ensemble=None):
-    optimizer = tf.train.GradientDescentOptimizer(self._learning_rate)
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(self._learning_rate)
     return optimizer.minimize(loss=loss, var_list=var_list)
 
   def build_mixture_weights_train_op(self, loss, var_list, logits, labels,
@@ -838,9 +923,9 @@ class EstimatorKerasLayersTest(tu.AdanetTestCase):
 
     # Evaluate.
     eval_results = estimator.evaluate(input_fn=train_input_fn, steps=3)
-    tf.logging.info("%s", eval_results)
+    logging.info("%s", eval_results)
     want_loss = 0.16915826
-    if LooseVersion(tf.VERSION) >= LooseVersion("1.10.0"):
+    if tf_compat.version_greater_or_equal("1.10.0"):
       # After TF v1.10.0 the loss computed from a neural network using Keras
       # layers changed, however it is not clear why.
       want_loss = 0.26195815
@@ -855,7 +940,7 @@ class EstimatorKerasLayersTest(tu.AdanetTestCase):
     # Export SavedModel.
     def serving_input_fn():
       """Input fn for serving export, starting from serialized example."""
-      serialized_example = tf.placeholder(
+      serialized_example = tf_compat.v1.placeholder(
           dtype=tf.string, shape=(None), name="serialized_example")
       return tf.estimator.export.ServingInputReceiver(
           features={"x": tf.constant([[0., 0., 0., 0.]], name="serving_x")},
@@ -900,9 +985,9 @@ class MultiHeadBuilder(Builder):
     seed = self._seed
     if previous_ensemble:
       seed += len(previous_ensemble.weighted_subnetworks)
-    kernel_initializer = tf.keras.initializers.he_normal(seed=seed)
+    kernel_initializer = tf_compat.v1.keras.initializers.he_normal(seed=seed)
     x = features["x"]
-    logits = tf.layers.dense(
+    logits = tf_compat.v1.layers.dense(
         x,
         units=logits_dimension,
         activation=None,
@@ -930,12 +1015,12 @@ class MultiHeadBuilder(Builder):
                                 iteration_step,
                                 summary,
                                 previous_ensemble=None):
-    optimizer = tf.train.GradientDescentOptimizer(self._learning_rate)
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(self._learning_rate)
     return optimizer.minimize(loss=loss, var_list=var_list)
 
   def build_mixture_weights_train_op(self, loss, var_list, logits, labels,
                                      iteration_step, summary):
-    optimizer = tf.train.GradientDescentOptimizer(self._learning_rate)
+    optimizer = tf_compat.v1.train.GradientDescentOptimizer(self._learning_rate)
     return optimizer.minimize(loss=loss, var_list=var_list)
 
   @property
@@ -945,20 +1030,21 @@ class MultiHeadBuilder(Builder):
 
 def _tf_version_less_than_v1_10_0():
   # TODO: Figure out why this is needed for multi-head.
-  return LooseVersion(tf.VERSION) < LooseVersion("1.10.0")
+  return not tf_compat.version_greater_or_equal("1.10.0")
 
 
 class EstimatorMultiHeadTest(tu.AdanetTestCase):
 
-  @parameterized.named_parameters({
-      "testcase_name": "concatenated_logits",
-      "builders": [MultiHeadBuilder()],
-      "want_loss": 2.809 if _tf_version_less_than_v1_10_0() else 3.218,
-  }, {
-      "testcase_name": "split_logits",
-      "builders": [MultiHeadBuilder(split_logits=True)],
-      "want_loss": 2.814 if _tf_version_less_than_v1_10_0() else 3.224,
-  })
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "concatenated_logits",
+          "builders": [MultiHeadBuilder()],
+          "want_loss": 2.809 if _tf_version_less_than_v1_10_0() else 3.218,
+      }, {
+          "testcase_name": "split_logits",
+          "builders": [MultiHeadBuilder(split_logits=True)],
+          "want_loss": 2.814 if _tf_version_less_than_v1_10_0() else 3.224,
+      })
   def test_lifecycle(self, builders, want_loss):
     """Train entire estimator lifecycle using XOR dataset."""
 
@@ -977,13 +1063,11 @@ class EstimatorMultiHeadTest(tu.AdanetTestCase):
       }
 
     estimator = Estimator(
-        head=tf.contrib.estimator.multi_head(heads=[
-            tf.contrib.estimator.regression_head(
-                name="head1",
-                loss_reduction=tf.losses.Reduction.SUM_OVER_BATCH_SIZE),
-            tf.contrib.estimator.regression_head(
-                name="head2",
-                loss_reduction=tf.losses.Reduction.SUM_OVER_BATCH_SIZE),
+        head=multi_head_lib.MultiHead(heads=[
+            regression_head.RegressionHead(
+                name="head1", loss_reduction=tf_compat.SUM_OVER_BATCH_SIZE),
+            regression_head.RegressionHead(
+                name="head2", loss_reduction=tf_compat.SUM_OVER_BATCH_SIZE),
         ]),
         subnetwork_generator=SimpleGenerator(builders),
         max_iteration_steps=3,
@@ -1008,7 +1092,7 @@ class EstimatorMultiHeadTest(tu.AdanetTestCase):
     # Export SavedModel.
     def serving_input_fn():
       """Input fn for serving export, starting from serialized example."""
-      serialized_example = tf.placeholder(
+      serialized_example = tf_compat.v1.placeholder(
           dtype=tf.string, shape=(None), name="serialized_example")
       return tf.estimator.export.ServingInputReceiver(
           features={"x": tf.constant([[0., 0., 0., 0.]], name="serving_x")},
@@ -1038,7 +1122,7 @@ class EstimatorCallingModelFnDirectlyTest(tu.AdanetTestCase):
         model_dir=self.test_subdirectory)
     model_fn = estimator.model_fn
     train_input_fn = tu.dummy_input_fn([[1., 0.]], [[1.]])
-    tf.train.create_global_step()
+    tf_compat.v1.train.create_global_step()
     features, labels = train_input_fn()
     with self.assertRaises(UserWarning):
       model_fn(
@@ -1051,27 +1135,28 @@ class EstimatorCallingModelFnDirectlyTest(tu.AdanetTestCase):
 class EstimatorCheckpointTest(tu.AdanetTestCase):
   """Tests estimator checkpoints."""
 
-  @parameterized.named_parameters({
-      "testcase_name": "single_iteration",
-      "max_iteration_steps": 3,
-      "keep_checkpoint_max": 3,
-      "want_num_checkpoints": 3,
-  }, {
-      "testcase_name": "single_iteration_keep_one",
-      "max_iteration_steps": 3,
-      "keep_checkpoint_max": 1,
-      "want_num_checkpoints": 1,
-  }, {
-      "testcase_name": "three_iterations",
-      "max_iteration_steps": 1,
-      "keep_checkpoint_max": 3,
-      "want_num_checkpoints": 3,
-  }, {
-      "testcase_name": "three_iterations_keep_one",
-      "max_iteration_steps": 1,
-      "keep_checkpoint_max": 1,
-      "want_num_checkpoints": 1,
-  })
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "single_iteration",
+          "max_iteration_steps": 3,
+          "keep_checkpoint_max": 3,
+          "want_num_checkpoints": 3,
+      }, {
+          "testcase_name": "single_iteration_keep_one",
+          "max_iteration_steps": 3,
+          "keep_checkpoint_max": 1,
+          "want_num_checkpoints": 1,
+      }, {
+          "testcase_name": "three_iterations",
+          "max_iteration_steps": 1,
+          "keep_checkpoint_max": 3,
+          "want_num_checkpoints": 3,
+      }, {
+          "testcase_name": "three_iterations_keep_one",
+          "max_iteration_steps": 1,
+          "keep_checkpoint_max": 1,
+          "want_num_checkpoints": 1,
+      })
   def test_checkpoints(self,
                        max_iteration_steps,
                        keep_checkpoint_max,
@@ -1089,7 +1174,7 @@ class EstimatorCheckpointTest(tu.AdanetTestCase):
         subnetwork_generator=subnetwork_generator,
         report_materializer=report_materializer,
         mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         max_iteration_steps=max_iteration_steps,
         use_bias=True,
@@ -1098,26 +1183,33 @@ class EstimatorCheckpointTest(tu.AdanetTestCase):
     train_input_fn = tu.dummy_input_fn([[1., 0.]], [[1.]])
     estimator.train(input_fn=train_input_fn, max_steps=max_steps)
 
-    checkpoints = tf.gfile.Glob(os.path.join(self.test_subdirectory, "*.meta"))
+    checkpoints = tf.io.gfile.glob(
+        os.path.join(self.test_subdirectory, "*.meta"))
     self.assertEqual(want_num_checkpoints, len(checkpoints))
 
 
 def _check_eventfile_for_keyword(keyword, dir_):
   """Checks event files for the keyword."""
 
-  tf.summary.FileWriterCache.clear()
+  tf_compat.v1.summary.FileWriterCache.clear()
 
   # Get last `Event` written.
   filenames = os.path.join(dir_, "events*")
-  event_paths = tf.gfile.Glob(filenames)
+  event_paths = tf.io.gfile.glob(filenames)
   if not event_paths:
     raise ValueError("Path '{}' not found.".format(filenames))
 
-  for last_event in tf.train.summary_iterator(event_paths[-1]):
+  for last_event in tf_compat.v1.train.summary_iterator(event_paths[-1]):
     if last_event.summary is not None:
       for value in last_event.summary.value:
         if keyword == value.tag:
-          return value.simple_value
+          if value.HasField("simple_value"):
+            return value.simple_value
+          if value.HasField("image"):
+            return (value.image.height, value.image.width,
+                    value.image.colorspace)
+          if value.HasField("tensor"):
+            return value.tensor.string_val
 
   raise ValueError("Keyword '{}' not found in path '{}'.".format(
       keyword, filenames))
@@ -1131,7 +1223,7 @@ class _FakeMetric(object):
     self._dtype = dtype
 
   def to_metric(self):
-    tensor = tf.convert_to_tensor(self._value, dtype=self._dtype)
+    tensor = tf.convert_to_tensor(value=self._value, dtype=self._dtype)
     return (tensor, tensor)
 
 
@@ -1161,7 +1253,7 @@ class _EvalMetricsHead(object):
     return tf.estimator.EstimatorSpec(
         mode=mode,
         predictions=logits,
-        loss=tf.reduce_mean(labels - logits),
+        loss=tf.reduce_mean(input_tensor=labels - logits),
         eval_metric_ops=metric_ops,
         train_op=train_op_fn(1))
 
@@ -1172,7 +1264,8 @@ class EstimatorSummaryWriterTest(tu.AdanetTestCase):
   def test_summaries(self):
     """Tests that summaries are written to candidate directory."""
 
-    run_config = tf.estimator.RunConfig(tf_random_seed=42)
+    run_config = tf.estimator.RunConfig(
+        tf_random_seed=42, log_step_count_steps=2, save_summary_steps=2)
     subnetwork_generator = SimpleGenerator(
         [_DNNBuilder("dnn", mixture_weight_learning_rate=.001)])
     report_materializer = ReportMaterializer(
@@ -1182,7 +1275,7 @@ class EstimatorSummaryWriterTest(tu.AdanetTestCase):
         subnetwork_generator=subnetwork_generator,
         report_materializer=report_materializer,
         mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         max_iteration_steps=10,
         use_bias=True,
@@ -1196,181 +1289,194 @@ class EstimatorSummaryWriterTest(tu.AdanetTestCase):
         ensemble_loss,
         _check_eventfile_for_keyword("loss", self.test_subdirectory),
         places=3)
+    self.assertIsNotNone(
+        _check_eventfile_for_keyword("global_step/sec", self.test_subdirectory))
     self.assertEqual(
         0.,
         _check_eventfile_for_keyword("iteration/adanet/iteration",
                                      self.test_subdirectory))
 
-    candidate_subdir = os.path.join(self.test_subdirectory, "candidate/t0_dnn")
+    subnetwork_subdir = os.path.join(self.test_subdirectory,
+                                     "subnetwork/t0_dnn")
     self.assertAlmostEqual(
-        3., _check_eventfile_for_keyword("scalar", candidate_subdir), places=3)
+        3., _check_eventfile_for_keyword("scalar", subnetwork_subdir), places=3)
+    self.assertEqual((3, 3, 1),
+                     _check_eventfile_for_keyword("image/image/0",
+                                                  subnetwork_subdir))
+    self.assertAlmostEqual(
+        5.,
+        _check_eventfile_for_keyword("nested/scalar", subnetwork_subdir),
+        places=3)
+
+    ensemble_subdir = os.path.join(
+        self.test_subdirectory, "ensemble/t0_dnn_grow_complexity_regularized")
     self.assertAlmostEqual(
         ensemble_loss,
         _check_eventfile_for_keyword(
-            "adanet_loss/adanet/adanet_weighted_ensemble", candidate_subdir),
+            "adanet_loss/adanet/adanet_weighted_ensemble", ensemble_subdir),
         places=3)
     self.assertAlmostEqual(
         0.,
         _check_eventfile_for_keyword(
             "complexity_regularization/adanet/adanet_weighted_ensemble",
-            candidate_subdir),
+            ensemble_subdir),
         places=3)
     self.assertAlmostEqual(
         0.,
         _check_eventfile_for_keyword(
             "mixture_weight_norms/adanet/"
-            "adanet_weighted_ensemble/subnetwork_0", candidate_subdir),
+            "adanet_weighted_ensemble/subnetwork_0", ensemble_subdir),
         places=3)
 
-  @parameterized.named_parameters({
-      "testcase_name": "none_metrics",
-      "head": _EvalMetricsHead(None),
-      "want_summaries": [],
-      "want_loss": .9910,
-  }, {
-      "testcase_name": "metrics_fn",
-      "head": _EvalMetricsHead(None),
-      "metric_fn": lambda predictions: {"avg": tf.metrics.mean(predictions)},
-      "want_summaries": ["avg"],
-      "want_loss": .9910,
-  }, {
-      "testcase_name": "empty_metrics",
-      "head": _EvalMetricsHead({}),
-      "want_summaries": [],
-      "want_loss": .9910,
-  }, {
-      "testcase_name": "evaluation_name",
-      "head": _EvalMetricsHead({}),
-      "evaluation_name": "continuous",
-      "want_summaries": [],
-      "want_loss": .9910,
-      "global_subdir": "eval_continuous",
-      "candidate_subdir": "candidate/t0_linear/eval_continuous",
-  }, {
-      "testcase_name":
-          "regression_head",
-      "head":
-          tf.contrib.estimator.regression_head(
-              loss_reduction=tf.losses.Reduction.SUM_OVER_BATCH_SIZE),
-      "want_summaries":
-          ["average_loss", "average_loss/adanet/adanet_weighted_ensemble"],
-      "want_loss":
-          .96453667,
-  }, {
-      "testcase_name":
-          "binary_classification_head",
-      "head":
-          tf.contrib.estimator.binary_classification_head(
-              loss_reduction=tf.losses.Reduction.SUM_OVER_BATCH_SIZE),
-      "want_summaries":
-          ["average_loss", "average_loss/adanet/adanet_weighted_ensemble"],
-      "want_loss":
-          0.6909014,
-  }, {
-      "testcase_name":
-          "all_metrics",
-      "head":
-          _EvalMetricsHead({
-              "float32":
-                  _FakeMetric(1., tf.float32),
-              "float64":
-                  _FakeMetric(1., tf.float64),
-              "serialized_summary":
-                  _FakeMetric(
-                      tf.Summary(value=[
-                          tf.Summary.Value(tag="summary_tag", simple_value=1.)
-                      ]).SerializeToString(), tf.string),
-          }),
-      "want_summaries": [
-          "float32",
-          "float64",
-          "serialized_summary/0",
-          "float32/adanet/adanet_weighted_ensemble",
-          "float64/adanet/adanet_weighted_ensemble",
-          "serialized_summary/adanet/adanet_weighted_ensemble/0",
-      ],
-      "want_loss":
-          .9910,
-  })
-  def test_eval_metrics(self,
-                        head,
-                        want_loss,
-                        want_summaries,
-                        evaluation_name=None,
-                        metric_fn=None,
-                        global_subdir="eval",
-                        candidate_subdir="candidate/t0_linear/eval"):
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "none_metrics",
+          "head": _EvalMetricsHead(None),
+          "want_summaries": [],
+          "want_loss": -1.791,
+      },
+      {
+          "testcase_name":
+              "metrics_fn",
+          "head":
+              _EvalMetricsHead(None),
+          # pylint: disable=g-long-lambda
+          "metric_fn":
+              lambda predictions: {
+                  "avg": tf_compat.v1.metrics.mean(predictions)
+              },
+          # pylint: enable=g-long-lambda
+          "want_summaries": ["avg"],
+          "want_loss":
+              -1.791,
+      },
+      {
+          "testcase_name": "empty_metrics",
+          "head": _EvalMetricsHead({}),
+          "want_summaries": [],
+          "want_loss": -1.791,
+      },
+      {
+          "testcase_name":
+              "evaluation_name",
+          "head":
+              _EvalMetricsHead({}),
+          "evaluation_name":
+              "continuous",
+          "want_summaries": [],
+          "want_loss":
+              -1.791,
+          "global_subdir":
+              "eval_continuous",
+          "subnetwork_subdir":
+              "subnetwork/t0_dnn/eval_continuous",
+          "ensemble_subdir":
+              "ensemble/t0_dnn_grow_complexity_regularized/eval_continuous",
+      },
+      {
+          "testcase_name":
+              "regression_head",
+          "head":
+              regression_head.RegressionHead(
+                  loss_reduction=tf_compat.SUM_OVER_BATCH_SIZE),
+          "want_summaries": ["average_loss"],
+          "want_loss":
+              .256,
+      },
+      {
+          "testcase_name":
+              "binary_classification_head",
+          "head":
+              binary_class_head.BinaryClassHead(
+                  loss_reduction=tf_compat.SUM_OVER_BATCH_SIZE),
+          "learning_rate":
+              .6,
+          "want_summaries": ["average_loss", "accuracy", "recall"],
+          "want_loss":
+              0.122,
+      },
+      {
+          "testcase_name":
+              "all_metrics",
+          "head":
+              _EvalMetricsHead({
+                  "float32":
+                      _FakeMetric(1., tf.float32),
+                  "float64":
+                      _FakeMetric(1., tf.float64),
+                  "serialized_summary":
+                      _FakeMetric(
+                          tf_compat.v1.Summary(value=[
+                              tf_compat.v1.Summary.Value(
+                                  tag="summary_tag", simple_value=1.)
+                          ]).SerializeToString(), tf.string),
+              }),
+          "want_summaries": [
+              "float32",
+              "float64",
+              "serialized_summary/0",
+          ],
+          "want_loss":
+              -1.791,
+      })
+  def test_eval_metrics(
+      self,
+      head,
+      want_loss,
+      want_summaries,
+      evaluation_name=None,
+      metric_fn=None,
+      learning_rate=.01,
+      global_subdir="eval",
+      subnetwork_subdir="subnetwork/t0_dnn/eval",
+      ensemble_subdir="ensemble/t0_dnn_grow_complexity_regularized/eval"):
     """Test that AdaNet evaluation metrics get persisted correctly."""
 
     seed = 42
     run_config = tf.estimator.RunConfig(tf_random_seed=seed)
     subnetwork_generator = SimpleGenerator([
-        _LinearBuilder("linear", mixture_weight_learning_rate=.001, seed=seed)
+        _DNNBuilder(
+            "dnn",
+            learning_rate=learning_rate,
+            mixture_weight_learning_rate=0.,
+            layer_size=8,
+            seed=seed)
     ])
-    report_materializer = ReportMaterializer(
-        input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=1)
     estimator = Estimator(
         head=head,
         subnetwork_generator=subnetwork_generator,
-        report_materializer=report_materializer,
-        mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
-        warm_start_mixture_weights=True,
-        max_iteration_steps=6,
-        use_bias=True,
+        max_iteration_steps=100,
         metric_fn=metric_fn,
         config=run_config,
         model_dir=self.test_subdirectory)
-    train_input_fn = tu.dummy_input_fn([[1., 0.]], [[1.]])
-    estimator.train(input_fn=train_input_fn, max_steps=3)
-
-    eval_set_size = 5
-
-    def eval_input_fn():
-      """Generates a stream of random features."""
-      feature_dataset = tf.data.Dataset.range(eval_set_size).map(
-          lambda i: tf.stack([tf.to_float(i), tf.to_float(i)]))
-      label_dataset = tf.data.Dataset.range(
-          eval_set_size).map(lambda _: tf.constant(1.))
-      dataset = tf.data.Dataset.zip((feature_dataset, label_dataset))
-      iterator = dataset.batch(1).make_one_shot_iterator()
-      features, labels = iterator.get_next()
-      return {"x": features}, labels
+    train_input_fn = tu.dummy_input_fn(XOR_FEATURES, XOR_LABELS)
+    estimator.train(input_fn=train_input_fn, max_steps=100)
 
     metrics = estimator.evaluate(
-        input_fn=eval_input_fn, steps=eval_set_size, name=evaluation_name)
+        input_fn=train_input_fn, steps=1, name=evaluation_name)
     self.assertAlmostEqual(want_loss, metrics["loss"], places=3)
 
     global_subdir = os.path.join(self.test_subdirectory, global_subdir)
-    candidate_subdir = os.path.join(self.test_subdirectory, candidate_subdir)
-    self.assertAlmostEqual(metrics["loss"],
-                           _check_eventfile_for_keyword("loss", global_subdir))
-    self.assertIsNotNone(
-        _check_eventfile_for_keyword(
-            "architecture/adanet/ensembles/0",
-            global_subdir,
-        ))
+    subnetwork_subdir = os.path.join(self.test_subdirectory, subnetwork_subdir)
+    ensemble_subdir = os.path.join(self.test_subdirectory, ensemble_subdir)
     self.assertAlmostEqual(
-        metrics["loss"],
-        _check_eventfile_for_keyword(
-            "loss/adanet/adanet_weighted_ensemble",
-            candidate_subdir,
-        ),
-        msg="Candidate loss and reported loss should be equal.")
-    self.assertIsNotNone(
-        _check_eventfile_for_keyword(
-            "loss/adanet/uniform_average_ensemble",
-            candidate_subdir,
-        ))
-    self.assertIsNotNone(
-        _check_eventfile_for_keyword(
-            "loss/adanet/subnetwork",
-            candidate_subdir,
-        ))
+        want_loss,
+        _check_eventfile_for_keyword("loss", subnetwork_subdir),
+        places=3)
     for metric in want_summaries:
       self.assertIsNotNone(
-          _check_eventfile_for_keyword(metric, global_subdir),
+          _check_eventfile_for_keyword(metric, subnetwork_subdir),
           msg="{} should be under 'eval'.".format(metric))
+    for dir_ in [global_subdir, ensemble_subdir]:
+      self.assertAlmostEqual(metrics["loss"],
+                             _check_eventfile_for_keyword("loss", dir_))
+      self.assertEqual([b"| dnn |"],
+                       _check_eventfile_for_keyword(
+                           "architecture/adanet/ensembles/0", dir_))
+      for metric in want_summaries:
+        self.assertTrue(
+            _check_eventfile_for_keyword(metric, dir_) > 0.,
+            msg="{} should be under 'eval'.".format(metric))
 
 
 class EstimatorMembersOverrideTest(tu.AdanetTestCase):
@@ -1388,7 +1494,7 @@ class EstimatorMembersOverrideTest(tu.AdanetTestCase):
         subnetwork_generator=subnetwork_generator,
         report_materializer=report_materializer,
         mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         max_iteration_steps=10,
         use_bias=True,
@@ -1419,43 +1525,44 @@ def _dummy_feature_dict_input_fn(features, labels):
 class EstimatorDifferentFeaturesPerModeTest(tu.AdanetTestCase):
   """Tests b/109751254."""
 
-  @parameterized.named_parameters({
-      "testcase_name": "extra_train_features",
-      "train_features": {
-          "x": [[1., 0.]],
-          "extra": [[1., 0.]],
-      },
-      "eval_features": {
-          "x": [[1., 0.]],
-      },
-      "predict_features": {
-          "x": [[1., 0.]],
-      },
-  }, {
-      "testcase_name": "extra_eval_features",
-      "train_features": {
-          "x": [[1., 0.]],
-      },
-      "eval_features": {
-          "x": [[1., 0.]],
-          "extra": [[1., 0.]],
-      },
-      "predict_features": {
-          "x": [[1., 0.]],
-      },
-  }, {
-      "testcase_name": "extra_predict_features",
-      "train_features": {
-          "x": [[1., 0.]],
-      },
-      "eval_features": {
-          "x": [[1., 0.]],
-      },
-      "predict_features": {
-          "x": [[1., 0.]],
-          "extra": [[1., 0.]],
-      },
-  })
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "extra_train_features",
+          "train_features": {
+              "x": [[1., 0.]],
+              "extra": [[1., 0.]],
+          },
+          "eval_features": {
+              "x": [[1., 0.]],
+          },
+          "predict_features": {
+              "x": [[1., 0.]],
+          },
+      }, {
+          "testcase_name": "extra_eval_features",
+          "train_features": {
+              "x": [[1., 0.]],
+          },
+          "eval_features": {
+              "x": [[1., 0.]],
+              "extra": [[1., 0.]],
+          },
+          "predict_features": {
+              "x": [[1., 0.]],
+          },
+      }, {
+          "testcase_name": "extra_predict_features",
+          "train_features": {
+              "x": [[1., 0.]],
+          },
+          "eval_features": {
+              "x": [[1., 0.]],
+          },
+          "predict_features": {
+              "x": [[1., 0.]],
+              "extra": [[1., 0.]],
+          },
+      })
   def test_different_features_per_mode(self, train_features, eval_features,
                                        predict_features):
     """Tests tests different numbers of features per mode."""
@@ -1469,7 +1576,7 @@ class EstimatorDifferentFeaturesPerModeTest(tu.AdanetTestCase):
         subnetwork_generator=subnetwork_generator,
         report_materializer=report_materializer,
         mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         max_iteration_steps=1,
         use_bias=True,
@@ -1493,7 +1600,7 @@ class EstimatorDifferentFeaturesPerModeTest(tu.AdanetTestCase):
     # Export SavedModel.
     def serving_input_fn():
       """Input fn for serving export, starting from serialized example."""
-      serialized_example = tf.placeholder(
+      serialized_example = tf_compat.v1.placeholder(
           dtype=tf.string, shape=(None), name="serialized_example")
       features = {}
       for key, value in predict_features.items():
@@ -1524,7 +1631,7 @@ class EstimatorExportSavedModelForPredictTest(tu.AdanetTestCase):
         subnetwork_generator=subnetwork_generator,
         report_materializer=report_materializer,
         mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         max_iteration_steps=1,
         use_bias=True,
@@ -1541,18 +1648,17 @@ class EstimatorExportSavedModelForPredictTest(tu.AdanetTestCase):
     # Export SavedModel.
     def serving_input_fn():
       """Input fn for serving export, starting from serialized example."""
-      serialized_example = tf.placeholder(
+      serialized_example = tf_compat.v1.placeholder(
           dtype=tf.string, shape=(None), name="serialized_example")
       for key, value in features.items():
         features[key] = tf.constant(value)
       return tf.estimator.export.ServingInputReceiver(
           features=features, receiver_tensors=serialized_example)
 
-    tf.contrib.estimator.export_saved_model_for_mode(
-        estimator,
+    estimator.export_saved_model(
         export_dir_base=self.test_subdirectory,
-        input_receiver_fn=serving_input_fn,
-        mode=tf.estimator.ModeKeys.PREDICT)
+        serving_input_receiver_fn=serving_input_fn,
+        experimental_mode=tf.estimator.ModeKeys.PREDICT)
 
 
 class EstimatorExportSavedModelForEvalTest(tu.AdanetTestCase):
@@ -1561,56 +1667,62 @@ class EstimatorExportSavedModelForEvalTest(tu.AdanetTestCase):
   def test_export_saved_model_for_eval(self):
     """Tests new SavedModel exporting functionality."""
 
-    if LooseVersion(tf.VERSION) < LooseVersion("1.10.0"):
+    if _tf_version_less_than_v1_10_0():
       self.skipTest("export_saved_model_for_eval is not "
                     "supported before TF v1.10.0.")
 
     run_config = tf.estimator.RunConfig(tf_random_seed=42)
-    subnetwork_generator = SimpleGenerator([_DNNBuilder("dnn")])
-    report_materializer = ReportMaterializer(
-        input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=1)
+    subnetwork_generator = SimpleGenerator(
+        [_DNNBuilder("dnn", layer_size=8, learning_rate=1.)])
     estimator = Estimator(
-        head=tu.head(),
+        head=binary_class_head.BinaryClassHead(),
         subnetwork_generator=subnetwork_generator,
-        report_materializer=report_materializer,
-        mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
-        warm_start_mixture_weights=True,
-        max_iteration_steps=1,
-        use_bias=True,
+        max_iteration_steps=100,
         model_dir=self.test_subdirectory,
         config=run_config)
 
-    features = {"x": [[1., 0.]]}
-    labels = [[1.]]
-    train_input_fn = _dummy_feature_dict_input_fn(features, labels)
+    train_input_fn = tu.dummy_input_fn(XOR_FEATURES, XOR_LABELS)
 
     # Train.
-    estimator.train(input_fn=train_input_fn, max_steps=2)
+    estimator.train(input_fn=train_input_fn, max_steps=300)
+
+    metrics = estimator.evaluate(input_fn=train_input_fn, steps=1)
+    self.assertAlmostEqual(.067, metrics["average_loss"], places=3)
+    self.assertAlmostEqual(1., metrics["recall"], places=3)
+    self.assertAlmostEqual(1., metrics["accuracy"], places=3)
 
     # Export SavedModel.
     def serving_input_fn():
       """Input fn for serving export, starting from serialized example."""
-      serialized_example = tf.placeholder(
+      serialized_example = tf_compat.v1.placeholder(
           dtype=tf.string, shape=(None), name="serialized_example")
-      for key, value in features.items():
-        features[key] = tf.constant(value)
       return export.SupervisedInputReceiver(
-          features=features,
-          labels=tf.constant(labels),
+          features={"x": tf.constant(XOR_FEATURES)},
+          labels=tf.constant(XOR_LABELS),
           receiver_tensors=serialized_example)
 
     export_dir_base = os.path.join(self.test_subdirectory, "export")
-    tf.contrib.estimator.export_saved_model_for_mode(
-        estimator,
-        export_dir_base=export_dir_base,
-        input_receiver_fn=serving_input_fn,
-        mode=tf.estimator.ModeKeys.EVAL)
+    try:
+      estimator.export_saved_model(
+          export_dir_base=export_dir_base,
+          serving_input_receiver_fn=serving_input_fn,
+          experimental_mode=tf.estimator.ModeKeys.EVAL)
+    except AttributeError:
+      pass
 
-    subdir = tf.gfile.ListDirectory(export_dir_base)[0]
+    try:
+      tf.contrib.estimator.export_saved_model_for_mode(
+          estimator,
+          export_dir_base=export_dir_base,
+          input_receiver_fn=serving_input_fn,
+          mode=tf.estimator.ModeKeys.EVAL)
+    except AttributeError:
+      pass
+
+    subdir = tf.io.gfile.listdir(export_dir_base)[0]
 
     with self.test_session() as sess:
-      meta_graph_def = tf.saved_model.loader.load(
+      meta_graph_def = tf_compat.v1.saved_model.loader.load(
           sess, ["eval"], os.path.join(export_dir_base, subdir))
       signature_def = meta_graph_def.signature_def.get("eval")
 
@@ -1618,21 +1730,37 @@ class EstimatorExportSavedModelForEvalTest(tu.AdanetTestCase):
       self.assertAlmostEqual(
           0.,
           sess.run(
-              tf.saved_model.utils.get_tensor_from_tensor_info(
+              tf_compat.v1.saved_model.utils.get_tensor_from_tensor_info(
                   signature_def.outputs["metrics/average_loss/value"])),
           places=3)
 
       # Run metric update op.
-      sess.run(
-          tf.saved_model.utils.get_tensor_from_tensor_info(
-              signature_def.outputs["metrics/average_loss/update_op"]))
+      sess.run((tf_compat.v1.saved_model.utils.get_tensor_from_tensor_info(
+          signature_def.outputs["metrics/average_loss/update_op"]),
+                tf_compat.v1.saved_model.utils.get_tensor_from_tensor_info(
+                    signature_def.outputs["metrics/accuracy/update_op"]),
+                tf_compat.v1.saved_model.utils.get_tensor_from_tensor_info(
+                    signature_def.outputs["metrics/recall/update_op"])))
 
       # Read metric again; it should no longer be zero.
       self.assertAlmostEqual(
-          0.996,
+          0.067,
           sess.run(
-              tf.saved_model.utils.get_tensor_from_tensor_info(
+              tf_compat.v1.saved_model.utils.get_tensor_from_tensor_info(
                   signature_def.outputs["metrics/average_loss/value"])),
+          places=3)
+      self.assertAlmostEqual(
+          1.,
+          sess.run(
+              tf_compat.v1.saved_model.utils.get_tensor_from_tensor_info(
+                  signature_def.outputs["metrics/recall/value"])),
+          places=3)
+
+      self.assertAlmostEqual(
+          1.,
+          sess.run(
+              tf_compat.v1.saved_model.utils.get_tensor_from_tensor_info(
+                  signature_def.outputs["metrics/accuracy/value"])),
           places=3)
 
 
@@ -2150,10 +2278,11 @@ class EstimatorReportTest(tu.AdanetTestCase):
           ],
       },
   )
-  def test_report_generation_and_usage(
-      self, subnetwork_builders, num_iterations,
-      want_materialized_iteration_reports, want_previous_ensemble_reports,
-      want_all_reports):
+  def test_report_generation_and_usage(self, subnetwork_builders,
+                                       num_iterations,
+                                       want_materialized_iteration_reports,
+                                       want_previous_ensemble_reports,
+                                       want_all_reports):
     # Stores the iteration_number, previous_ensemble_reports and all_reports
     # arguments in the self._iteration_reports dictionary, overwriting what
     # was seen in previous iterations.
@@ -2176,7 +2305,7 @@ class EstimatorReportTest(tu.AdanetTestCase):
         head=tu.head(),
         subnetwork_generator=subnetwork_generator,
         mixture_weight_type=MixtureWeightType.MATRIX,
-        mixture_weight_initializer=tf.zeros_initializer(),
+        mixture_weight_initializer=tf_compat.v1.zeros_initializer(),
         warm_start_mixture_weights=True,
         max_iteration_steps=max_iteration_steps,
         use_bias=True,
@@ -2229,38 +2358,42 @@ class EstimatorForceGrowTest(tu.AdanetTestCase):
   the ensemble.
   """
 
-  @parameterized.named_parameters({
-      "testcase_name": "one_builder_no_force_grow",
-      "builders": [_LinearBuilder("linear", mixture_weight_learning_rate=0.)],
-      "force_grow": False,
-      "want_subnetworks": 1,
-  }, {
-      "testcase_name": "one_builder",
-      "builders": [_LinearBuilder("linear", mixture_weight_learning_rate=0.)],
-      "force_grow": True,
-      "want_subnetworks": 2,
-  }, {
-      "testcase_name": "two_builders",
-      "builders": [
-          _LinearBuilder("linear", mixture_weight_learning_rate=0.),
-          _LinearBuilder("linear2", mixture_weight_learning_rate=0.)
-      ],
-      "force_grow": True,
-      "want_subnetworks": 2,
-  }, {
-      "testcase_name":
-          "two_builders_with_evaluator",
-      "builders": [
-          _LinearBuilder("linear", mixture_weight_learning_rate=0.),
-          _LinearBuilder("linear2", mixture_weight_learning_rate=0.)
-      ],
-      "force_grow":
-          True,
-      "evaluator":
-          Evaluator(input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=1),
-      "want_subnetworks":
-          2,
-  })
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "one_builder_no_force_grow",
+          "builders":
+              [_LinearBuilder("linear", mixture_weight_learning_rate=0.)],
+          "force_grow": False,
+          "want_subnetworks": 1,
+      }, {
+          "testcase_name": "one_builder",
+          "builders":
+              [_LinearBuilder("linear", mixture_weight_learning_rate=0.)],
+          "force_grow": True,
+          "want_subnetworks": 2,
+      }, {
+          "testcase_name": "two_builders",
+          "builders": [
+              _LinearBuilder("linear", mixture_weight_learning_rate=0.),
+              _LinearBuilder("linear2", mixture_weight_learning_rate=0.)
+          ],
+          "force_grow": True,
+          "want_subnetworks": 2,
+      }, {
+          "testcase_name":
+              "two_builders_with_evaluator",
+          "builders": [
+              _LinearBuilder("linear", mixture_weight_learning_rate=0.),
+              _LinearBuilder("linear2", mixture_weight_learning_rate=0.)
+          ],
+          "force_grow":
+              True,
+          "evaluator":
+              Evaluator(
+                  input_fn=tu.dummy_input_fn([[1., 1.]], [[0.]]), steps=1),
+          "want_subnetworks":
+              2,
+      })
   def test_force_grow(self,
                       builders,
                       force_grow,
@@ -2279,9 +2412,7 @@ class EstimatorForceGrowTest(tu.AdanetTestCase):
         model_dir=self.test_subdirectory,
         config=run_config)
 
-    xor_features = [[1., 0.], [0., 0], [0., 1.], [1., 1.]]
-    xor_labels = [[1.], [0.], [1.], [0.]]
-    train_input_fn = tu.dummy_input_fn(xor_features, xor_labels)
+    train_input_fn = tu.dummy_input_fn(XOR_FEATURES, XOR_LABELS)
 
     # Train for four iterations.
     estimator.train(input_fn=train_input_fn, max_steps=3)
@@ -2291,6 +2422,126 @@ class EstimatorForceGrowTest(tu.AdanetTestCase):
     self.assertEqual(
         want_subnetworks,
         str(eval_results["architecture/adanet/ensembles"]).count(" linear "))
+
+
+class EstimatorDebugTest(tu.AdanetTestCase):
+  """Tests b/125483534. Detect NaNs in input_fns."""
+
+  # pylint: disable=g-long-lambda
+  @parameterized.named_parameters(
+      {
+          "testcase_name":
+              "nan_features",
+          "head":
+              regression_head.RegressionHead(
+                  name="y", loss_reduction=tf_compat.SUM_OVER_BATCH_SIZE),
+          "input_fn":
+              lambda: ({
+                  "x": tf.math.log([[1., 0.]])
+              }, tf.zeros([1, 1]))
+      }, {
+          "testcase_name":
+              "nan_label",
+          "head":
+              regression_head.RegressionHead(
+                  name="y", loss_reduction=tf_compat.SUM_OVER_BATCH_SIZE),
+          "input_fn":
+              lambda: ({
+                  "x": tf.ones([1, 2])
+              }, tf.math.log([[0.]]))
+      }, {
+          "testcase_name":
+              "nan_labels_dict",
+          "head":
+              multi_head_lib.MultiHead(heads=[
+                  regression_head.RegressionHead(
+                      name="y", loss_reduction=tf_compat.SUM_OVER_BATCH_SIZE),
+              ]),
+          "input_fn":
+              lambda: ({
+                  "x": tf.ones([1, 2])
+              }, {
+                  "y": tf.math.log([[0.]])
+              })
+      })
+  # pylint: enable=g-long-lambda
+  def test_nans_from_input_fn(self, head, input_fn):
+    subnetwork_generator = SimpleGenerator([_DNNBuilder("dnn")])
+    estimator = Estimator(
+        head=head,
+        subnetwork_generator=subnetwork_generator,
+        max_iteration_steps=3,
+        model_dir=self.test_subdirectory,
+        debug=True)
+    with self.assertRaises(tf.errors.InvalidArgumentError):
+      estimator.train(input_fn=input_fn, max_steps=3)
+
+
+class EstimatorEvaluateDuringTrainHookTest(tu.AdanetTestCase):
+  """Tests b/129000842 with a hook that calls estimator.evaluate()."""
+
+  def test_train(self):
+    run_config = tf.estimator.RunConfig(tf_random_seed=42)
+    subnetwork_generator = SimpleGenerator([_DNNBuilder("dnn")])
+    estimator = Estimator(
+        head=tu.head(),
+        subnetwork_generator=subnetwork_generator,
+        max_iteration_steps=1,
+        model_dir=self.test_subdirectory,
+        config=run_config)
+
+    train_input_fn = tu.dummy_input_fn(XOR_FEATURES, XOR_LABELS)
+
+    class EvalTrainHook(tf.estimator.SessionRunHook):
+
+      def end(self, session):
+        estimator.evaluate(input_fn=train_input_fn, steps=1)
+
+    # This should not infinite loop.
+    estimator.train(
+        input_fn=train_input_fn, max_steps=3, hooks=[EvalTrainHook()])
+
+
+class EstimatorTFLearnRunConfigTest(tu.AdanetTestCase):
+  """Tests b/129483642 for tf.contrib.learn.RunConfig.
+
+  Checks that TF_CONFIG is overwritten correctly when no cluster is specified
+  in the RunConfig and the only task is of type chief.
+  """
+
+  def test_train(self):
+    try:
+      tf.contrib.learn.RunConfig(tf_random_seed=42)
+    except AttributeError:
+      self.skipTest("There is no tf.contrib in TF 2.0.")
+
+    try:
+      tf_config = {
+          "task": {
+              "type": "chief",
+              "index": 0
+          },
+      }
+      os.environ["TF_CONFIG"] = json.dumps(tf_config)
+      run_config = tf.contrib.learn.RunConfig(tf_random_seed=42)
+      run_config._is_chief = True  # pylint: disable=protected-access
+
+      subnetwork_generator = SimpleGenerator([_DNNBuilder("dnn")])
+      estimator = Estimator(
+          head=tu.head(),
+          subnetwork_generator=subnetwork_generator,
+          max_iteration_steps=1,
+          model_dir=self.test_subdirectory,
+          config=run_config)
+      train_input_fn = tu.dummy_input_fn(XOR_FEATURES, XOR_LABELS)
+
+      # Will fail if TF_CONFIG is not overwritten correctly in
+      # Estimator#prepare_next_iteration.
+      estimator.train(input_fn=train_input_fn, max_steps=3)
+    finally:
+      # Revert TF_CONFIG environment variable in order to not break other tests.
+      del os.environ["TF_CONFIG"]
+
 
 
 if __name__ == "__main__":

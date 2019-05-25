@@ -15,7 +15,8 @@
 """Configuration file for the Sphinx documentation builder.
 
 This file does only contain a selection of the most common options. For a
-full list see the documentation: http://www.sphinx-doc.org/en/master/config
+full list see the documentation:
+http://www.sphinx-doc.org/en/master/usage/configuration.html
 """
 
 # -- Path setup --------------------------------------------------------------
@@ -28,6 +29,8 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath('../..'))
 
+from adanet import version as ver  # pylint: disable=g-import-not-at-top
+
 # -- Project information -----------------------------------------------------
 
 project = u'adanet'
@@ -35,9 +38,9 @@ copyright = u'2018, AdaNet Authors'  # pylint: disable=redefined-builtin
 author = u'AdaNet Authors'
 
 # The short X.Y version
-version = u'0.5.0'
+version = ver.__version__
 # The full version, including alpha/beta/rc tags
-release = u'[0.5.0]'
+release = version
 
 # -- General configuration ---------------------------------------------------
 
@@ -49,6 +52,7 @@ release = u'[0.5.0]'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'recommonmark',
     'sphinx.ext.autodoc',
     'sphinx.ext.doctest',
     'sphinx.ext.intersphinx',
@@ -58,13 +62,14 @@ extensions = [
 ]
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+# templates_path = ['_templates']
 
 # The suffix(es) of source filenames.
-# You can specify multiple suffix as a list of string:
-#
-# source_suffix = ['.rst', '.md']
-source_suffix = '.rst'
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.txt': 'markdown',
+    '.md': 'markdown',
+}
 
 # The master toctree document.
 master_doc = 'index'
@@ -90,6 +95,12 @@ pygments_style = None
 # a list of builtin themes.
 #
 html_theme = 'sphinx_rtd_theme'
+
+html_logo = './assets/adanet_tangram_logo.png'
+
+html_context = {
+    'css_files': ['_static/custom.css'],
+}
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the

@@ -13,8 +13,33 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================-->
 
-# Current version (0.6.0-dev)
+# Current version (0.7.0.dev)
  * Under development.
+ * TODO: Add official Keras Model support, including Keras layers, Sequential, and Model subclasses for defining subnetworks.
+ * Introduce `adanet.AutoEnsembleSubestimator` for training subestimators on different training data partitions and implement ensemble methods like bootstrap aggregating (a.k.a bagging).
+ * Fix bug when using Gradient Boosted Decision Tree Estimators with `AutoEnsembleEstimator` during distributed training.
+ * Allow `AutoEnsembleEstimator's` `candidate_pool` argument to be a `lambda` in order to create `Estimators` lazily.
+ * Remove `adanet.subnetwork.Builder#prune_previous_ensemble` for abstract class. This behavior is now specified using `adanet.ensemble.Strategy` subclasses.
+ * **BREAKING CHANGE**: Only support TensorFlow >= 1.13 to better support TensorFlow 2.0. Drop support for versions < 1.13.
+ * Correct eval metric computations on CPU and GPU.
+
+# Release 0.6.2
+ * Fix n+1 global-step increment bug in `adanet.AutoEnsembleEstimator`. This bug incremented the global_step by n+1 for n canned `Estimators` like `DNNEstimator`.
+
+# Release 0.6.1
+ * Maintain compatibility with TensorFlow versions >=1.9.
+
+# Release 0.6.0
+ * Officially support AdaNet on TPU using `adanet.TPUEstimator` with `adanet.Estimator` feature parity.
+ * Support dictionary candidate pools in `adanet.AutoEnsembleEstimator` constructor to specify human-readable candidate names.
+ * Improve AutoEnsembleEstimator ability to handling custom `tf.estimator.Estimator` subclasses.
+ * Introduce `adanet.ensemble` which contains interfaces and examples of ways to learn ensembles using AdaNet. Users can now extend AdaNet to use custom ensemble-learning methods.
+ * Record TensorBoard `scalar`, `image`, `histogram`, and `audio` summaries on TPU during training.
+ * Add debug mode to help detect NaNs and Infs during training.
+ * Improve subnetwork `tf.train.SessionRunHook` support to handle more edge cases.
+ * ~~Maintain compatibility with TensorFlow versions 1.9 thru 1.13~~ Only works for TensorFlow version >=1.13.
+ * Improve documentation including adding 'Getting Started' documentation to [adanet.readthedocs.io](http://adanet.readthedocs.io).
+ * **BREAKING CHANGE**: Importing the `adanet.subnetwork` package using `from adanet.core import subnetwork` will no longer work, because the package was moved to the `adanet/subnetwork` directory. Most users should already be using `adanet.subnetwork` or `from adanet import subnetwork`, and should not be affected.
 
 # Release 0.5.0
  * Support training on TPU using `adanet.TPUEstimator`.

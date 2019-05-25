@@ -8,7 +8,7 @@
 AdaNet documentation
 ==================================
 
-AdaNet: Fast and flexible AutoML with learning guarantees.
+AdaNet is a TensorFlow framework for fast and flexible AutoML with learning guarantees.
 
 .. raw:: html
 
@@ -22,10 +22,10 @@ This project is based on the `AdaNet algorithm`, presented in “`AdaNet: Adapti
 
 AdaNet has the following goals:
 
-* `Ease of use`: Provide familiar APIs (e.g. Keras, Estimator) for training, evaluating, and serving models.
-* `Speed`: Scale with available compute and quickly produce high quality models.
-* `Flexibility`: Allow researchers and practitioners to extend AdaNet to novel subnetwork architectures, search spaces, and tasks.
-* `Learning guarantees`: Optimize an objective that offers theoretical learning guarantees.
+* **Ease of use**: Provide familiar APIs (e.g. Keras, Estimator) for training, evaluating, and serving models.
+* **Speed**: Scale with available compute and quickly produce high quality models.
+* **Flexibility**: Allow researchers and practitioners to extend AdaNet to novel subnetwork architectures, search spaces, and tasks.
+* **Learning guarantees**: Optimize an objective that offers theoretical learning guarantees.
 
 The following animation shows AdaNet adaptively growing an ensemble of neural networks. At each iteration, it measures the ensemble loss for each candidate, and selects the best one to move onto the next iteration. At subsequent iterations, the blue subnetworks are frozen, and only yellow subnetworks are trained:
 
@@ -35,9 +35,30 @@ The following animation shows AdaNet adaptively growing an ensemble of neural ne
       <img src="https://tensorflow.github.io/adanet/images/adanet_animation.gif" alt="adanet_tangram_logo"><br><br>
     </div>
 
-AdaNet was first announced on the Google AI research blog: "[Introducing AdaNet: Fast and Flexible AutoML with Learning Guarantees](https://ai.googleblog.com/2018/10/introducing-adanet-fast-and-flexible.html)".
+AdaNet was first announced on the Google AI research blog: "`Introducing AdaNet: Fast and Flexible AutoML with Learning Guarantees <https://ai.googleblog.com/2018/10/introducing-adanet-fast-and-flexible.html>`_".
 
 This is not an official Google product.
+
+.. toctree::
+  :glob:
+  :maxdepth: 1
+  :caption: Getting Started
+
+  overview
+  quick_start
+  tutorials
+  tensorboard
+  distributed
+  tpu
+
+.. toctree::
+  :glob:
+  :maxdepth: 1
+  :caption: Research
+
+  algorithm
+  theory
+
 
 .. toctree::
   :glob:
@@ -45,7 +66,9 @@ This is not an official Google product.
   :caption: Package Reference
 
   adanet
+  adanet.ensemble
   adanet.subnetwork
+  adanet.distributed
 
 Indices and tables
 ==================

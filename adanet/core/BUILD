@@ -14,7 +14,7 @@ py_library(
     srcs = ["__init__.py"],
     visibility = whitelist,
     deps = [
-        ":ensemble",
+        ":ensemble_builder",
         ":estimator",
         ":evaluator",
         ":report_materializer",
@@ -27,12 +27,15 @@ py_library(
     name = "estimator",
     srcs = ["estimator.py"],
     deps = [
+        ":architecture",
         ":candidate",
-        ":ensemble",
+        ":ensemble_builder",
         ":iteration",
         ":report_accessor",
         ":summary",
         ":timer",
+        "//adanet/distributed",
+        "//adanet/ensemble",
         "@six_archive//:six",
     ],
 )
@@ -42,14 +45,47 @@ py_test(
     size = "large",
     srcs = ["estimator_test.py"],
     shard_count = 40,
-    srcs_version = "PY2AND3",
     deps = [
-        ":ensemble",
+        ":ensemble_builder",
         ":estimator",
         ":evaluator",
         ":report_materializer",
         ":testing_utils",
-        "//adanet/core/subnetwork",
+        "//adanet/subnetwork",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+py_test(
+    name = "estimator_distributed_test",
+    size = "large",
+    srcs = ["estimator_distributed_test.py"],
+    data = [
+        ":estimator_distributed_test_runner" +
+        "",
+    ],
+    flaky = 1,
+    shard_count = 10,
+    deps = [
+        ":estimator",
+        ":timer",
+        "//adanet/subnetwork",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+# Subprocess binary for estimator_distributed_test.
+py_binary(
+    name = "estimator_distributed_test_runner",
+    testonly = 1,
+    srcs = ["estimator_distributed_test_runner.py"],
+    deps = [
+        ":estimator",
+        "//adanet/autoensemble",
+        "//adanet/distributed",
+        "//adanet/subnetwork",
+        "@absl_py//absl:app",
+        "@absl_py//absl/testing:absltest",
         "@absl_py//absl/testing:parameterized",
     ],
 )
@@ -58,7 +94,7 @@ py_library(
     name = "tpu_estimator",
     srcs = ["tpu_estimator.py"],
     deps = [
-        ":ensemble",
+        ":ensemble_builder",
         ":estimator",
         "@six_archive//:six",
     ],
@@ -67,11 +103,10 @@ py_library(
 py_test(
     name = "tpu_estimator_test",
     srcs = ["tpu_estimator_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":testing_utils",
         ":tpu_estimator",
-        "//adanet/core/subnetwork",
+        "//adanet/subnetwork",
         "@absl_py//absl/testing:parameterized",
     ],
 )
@@ -86,7 +121,6 @@ py_library(
 py_test(
     name = "candidate_test",
     srcs = ["candidate_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":candidate",
         ":testing_utils",
@@ -98,8 +132,10 @@ py_library(
     name = "iteration",
     srcs = ["iteration.py"],
     deps = [
-        ":summary",
-        "//adanet/core/subnetwork",
+        ":ensemble_builder",
+        ":eval_metrics",
+        "//adanet/distributed",
+        "//adanet/subnetwork",
         "@six_archive//:six",
     ],
 )
@@ -107,13 +143,13 @@ py_library(
 py_test(
     name = "iteration_test",
     srcs = ["iteration_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":candidate",
-        ":ensemble",
+        ":ensemble_builder",
         ":iteration",
+        ":summary",
         ":testing_utils",
-        "//adanet/core/subnetwork",
+        "//adanet/subnetwork",
         "@absl_py//absl/testing:parameterized",
     ],
 )
@@ -122,13 +158,13 @@ py_library(
     name = "evaluator",
     srcs = ["evaluator.py"],
     deps = [
+        "//adanet/tf_compat",
     ],
 )
 
 py_test(
     name = "evaluator_test",
     srcs = ["evaluator_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":evaluator",
         ":testing_utils",
@@ -137,22 +173,46 @@ py_test(
 )
 
 py_library(
-    name = "ensemble",
-    srcs = ["ensemble.py"],
+    name = "ensemble_builder",
+    srcs = ["ensemble_builder.py"],
     deps = [
-        "//adanet/core/subnetwork",
+        ":architecture",
+        ":eval_metrics",
+        ":summary",
+        "//adanet/subnetwork",
     ],
 )
 
 py_test(
-    name = "ensemble_test",
-    srcs = ["ensemble_test.py"],
-    srcs_version = "PY2AND3",
+    name = "ensemble_builder_test",
+    srcs = ["ensemble_builder_test.py"],
     deps = [
-        ":ensemble",
+        ":ensemble_builder",
         ":summary",
         ":testing_utils",
-        "//adanet/core/subnetwork",
+        "//adanet/ensemble",
+        "//adanet/subnetwork",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+py_library(
+    name = "eval_metrics",
+    srcs = ["eval_metrics.py"],
+    deps = [
+        "@six_archive//:six",
+    ],
+)
+
+py_test(
+    name = "eval_metrics_test",
+    srcs = ["eval_metrics_test.py"],
+    deps = [
+        ":architecture",
+        ":candidate",
+        ":ensemble_builder",
+        ":eval_metrics",
+        ":testing_utils",
         "@absl_py//absl/testing:parameterized",
     ],
 )
@@ -167,9 +227,9 @@ py_library(
 py_test(
     name = "summary_test",
     srcs = ["summary_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":summary",
+        ":testing_utils",
         "@absl_py//absl/testing:parameterized",
         "@six_archive//:six",
     ],
@@ -183,7 +243,6 @@ py_library(
 py_test(
     name = "timer_test",
     srcs = ["timer_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":timer",
     ],
@@ -194,8 +253,10 @@ py_library(
     testonly = 1,
     srcs = ["testing_utils.py"],
     deps = [
-        ":ensemble",
-        "//adanet/core/subnetwork",
+        ":architecture",
+        ":ensemble_builder",
+        "//adanet/ensemble",
+        "//adanet/subnetwork",
         "@absl_py//absl/testing:parameterized",
     ],
 )
@@ -222,7 +283,8 @@ py_library(
     srcs = ["report_accessor.py"],
     deps = [
         ":report_pb2",
-        "//adanet/core/subnetwork",
+        "//adanet/subnetwork",
+        "//adanet/tf_compat",
         "@six_archive//:six",
     ],
 )
@@ -230,10 +292,9 @@ py_library(
 py_test(
     name = "report_accessor_test",
     srcs = ["report_accessor_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":report_accessor",
-        "//adanet/core/subnetwork",
+        "//adanet/subnetwork",
         "@absl_py//absl/testing:parameterized",
     ],
 )
@@ -242,18 +303,31 @@ py_library(
     name = "report_materializer",
     srcs = ["report_materializer.py"],
     deps = [
-        "//adanet/core/subnetwork",
+        "//adanet/subnetwork",
     ],
 )
 
 py_test(
     name = "report_materializer_test",
     srcs = ["report_materializer_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
         ":report_materializer",
         ":testing_utils",
-        "//adanet/core/subnetwork",
+        "//adanet/subnetwork",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+py_library(
+    name = "architecture",
+    srcs = ["architecture.py"],
+)
+
+py_test(
+    name = "architecture_test",
+    srcs = ["architecture_test.py"],
+    deps = [
+        ":architecture",
         "@absl_py//absl/testing:parameterized",
     ],
 )

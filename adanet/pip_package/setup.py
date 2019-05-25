@@ -26,9 +26,14 @@ with open('adanet/version.py') as in_file:
   exec(in_file.read())
 
 REQUIRED_PACKAGES = [
-    'numpy >= 1.12.0',
-    'six >= 1.10.0',
-    'protobuf >= 3.6.0',
+    'absl-py>=0.7,<1.0',
+    'six>=1.11,<2.0',
+    'numpy>=1.15,<2.0',
+    'nose>=1.3,<2.0',
+    'rednose>=1.3,<2.0',
+    'coverage>=4.5,<5.0',
+    'protobuf>=3.6,<4.0',
+    'mock>=3.0,<4.0',
 ]
 
 setup(

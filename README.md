@@ -1,14 +1,15 @@
 # AdaNet
 
-[![Documentation Status](https://readthedocs.org/projects/adanet/badge/?version=latest)](https://adanet.readthedocs.io/en/latest/?badge=latest)
-[![PyPI version](https://badge.fury.io/py/adanet.svg)](https://badge.fury.io/py/adanet)
-[![Travis](https://travis-ci.org/tensorflow/adanet.svg?branch=master)](https://travis-ci.org/tensorflow/adanet)
-[![codecov](https://codecov.io/gh/tensorflow/adanet/branch/master/graph/badge.svg)](https://codecov.io/gh/tensorflow/adanet)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/tensorflow/adanet/blob/master/LICENSE)
-
 <div align="center">
   <img src="https://tensorflow.github.io/adanet/images/adanet_tangram_logo.png" alt="adanet_tangram_logo"><br><br>
 </div>
+
+[![Documentation Status](https://readthedocs.org/projects/adanet/badge)](https://adanet.readthedocs.io)
+[![PyPI version](https://badge.fury.io/py/adanet.svg)](https://badge.fury.io/py/adanet)
+[![Travis](https://travis-ci.org/tensorflow/adanet.svg?branch=master)](https://travis-ci.org/tensorflow/adanet)
+[![codecov](https://codecov.io/gh/tensorflow/adanet/branch/master/graph/badge.svg)](https://codecov.io/gh/tensorflow/adanet)
+[![Gitter](https://badges.gitter.im/tensorflow/adanet.svg)](https://gitter.im/tensorflow/adanet?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/tensorflow/adanet/blob/master/LICENSE)
 
 **AdaNet** is a lightweight TensorFlow-based framework for automatically learning high-quality models with minimal expert intervention. AdaNet builds on recent AutoML efforts to be fast and flexible while providing learning guarantees. Importantly, AdaNet provides a general framework for not only learning a neural network architecture, but also for learning to ensemble to obtain even better models.
 
@@ -39,8 +40,8 @@ AdaNet provides the following AutoML features:
  * Regression, binary and multi-class classification, and multi-head task support.
  * A [`tf.estimator.Estimator`](https://www.tensorflow.org/guide/estimators) API for training, evaluation, prediction, and serving models.
  * The [`adanet.AutoEnsembleEstimator`](https://github.com/tensorflow/adanet/blob/master/adanet/autoensemble/estimator.py) for learning to ensemble user-defined `tf.estimator.Estimators`.
- * The ability to define subnetworks that change structure over time using [`tf.keras.layers`](https://www.tensorflow.org/guide/keras#functional_api) via the [`adanet.subnetwork` API](https://github.com/tensorflow/adanet/blob/master/adanet/core/subnetwork/generator.py).
- * CPU and GPU support (TPU coming soon).
+ * The ability to define subnetworks that change structure over time using [`tf.keras.layers`](https://www.tensorflow.org/guide/keras#functional_api) via the [`adanet.subnetwork` API](https://github.com/tensorflow/adanet/blob/master/adanet/subnetwork/generator.py).
+ * CPU, GPU, and TPU support.
  * [Distributed multi-server training](https://cloud.google.com/blog/products/gcp/easy-distributed-training-with-tensorflow-using-tfestimatortrain-and-evaluate-on-cloud-ml-engine).
  * TensorBoard integration.
 
@@ -53,7 +54,7 @@ import adanet
 import tensorflow as tf
 
 # Define the model head for computing loss and evaluation metrics.
-head = tf.contrib.estimator.multi_class_head(n_classes=10)
+head = MultiClassHead(n_classes=10)
 
 # Feature columns define how to process examples.
 feature_columns = ...
@@ -61,16 +62,18 @@ feature_columns = ...
 # Learn to ensemble linear and neural network models.
 estimator = adanet.AutoEnsembleEstimator(
     head=head,
-    candidate_pool=[
-        tf.estimator.LinearEstimator(
-            head=head,
-            feature_columns=feature_columns,
-            optimizer=tf.train.FtrlOptimizer(...)),
-        tf.estimator.DNNEstimator(
-            head=head,
-            feature_columns=feature_columns,
-            optimizer=tf.train.ProximalAdagradOptimizer(...),
-            hidden_units=[1000, 500, 100])],
+    candidate_pool={
+        "linear":
+            tf.estimator.LinearEstimator(
+                head=head,
+                feature_columns=feature_columns,
+                optimizer=...),
+        "dnn":
+            tf.estimator.DNNEstimator(
+                head=head,
+                feature_columns=feature_columns,
+                optimizer=...,
+                hidden_units=[1000, 500, 100])},
     max_iteration_steps=50)
 
 estimator.train(input_fn=train_input_fn, steps=100)
@@ -89,10 +92,10 @@ To get you started:
 
 Requires [Python](https://www.python.org/) 2.7, 3.4, 3.5, or 3.6.
 
-`adanet` depends on bug fixes and enhancements not present in TensorFlow releases prior to 1.9. You must install or upgrade your TensorFlow package to at least 1.9:
+`adanet` depends on bug fixes and enhancements not present in TensorFlow releases prior to 1.13. You must install or upgrade your TensorFlow package to at least 1.13:
 
 ```shell
-$ pip install "tensorflow>=1.9.0"
+$ pip install "tensorflow>=1.13,<2.0"
 ```
 
 ## Installing with Pip
